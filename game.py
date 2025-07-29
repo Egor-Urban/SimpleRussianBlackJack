@@ -1,6 +1,7 @@
 # Simple Russian Blackjack in terminal
-# Version: 3.4.18 r
+# Version: 4.4.25 r
 # Developer: Urban Egor
+
 
 import random
 import os
@@ -8,7 +9,6 @@ import time
 
 
 
-# --- CONSTs ---
 RANKS = ['6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 SUITS = ['♠', '♥', '♦', '♣']
 VALUES = {'6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 2, 'Q': 3, 'K': 4, 'A': 11}
@@ -28,57 +28,57 @@ class Card:
         return f"{self.rank}{self.suit}"
 
 
-    def __repr__(self):
-        return str(self)
+    def __hash__(self):
+        return hash((self.rank, self.suit))
+
+
+    def __eq__(self, other):
+        return isinstance(other, Card) and self.rank == other.rank and self.suit == other.suit
 
 
 
 class Deck:
     def __init__(self):
-        self.reset()
+        self.used_cards = set()
+        self.refresh()
 
 
-    def reset(self):
-        self.cards = [Card(rank, suit) for rank in RANKS for suit in SUITS]
+    def refresh(self):
+        self.cards = [
+            Card(rank, suit)
+            for rank in RANKS
+            for suit in SUITS
+            if Card(rank, suit) not in self.used_cards
+        ]
         random.shuffle(self.cards)
-        self.used = []
 
 
     def draw(self):
         if not self.cards:
-            raise RuntimeError("Deck is empty now.")
+            raise RuntimeError("Cards is end.")
         card = self.cards.pop()
-        self.used.append(card)
+        self.used_cards.add(card)
         return card
 
 
     def remove_except(self, keep_cards):
-        keep_set = {(c.rank, c.suit) for c in keep_cards}
-        self.cards = [c for c in self.cards if (c.rank, c.suit) in keep_set]
-        self.used = [c for c in self.used if (c.rank, c.suit) in keep_set]
-
-
-    def remaining(self):
-        return len(self.cards)
-
-
-    def __str__(self):
-        return " ".join(str(card) for card in self.cards)
+        keep_set = set(keep_cards)
+        self.used_cards = keep_set.copy()
+        self.cards = [card for card in self.cards if card in keep_set]
 
 
 
-# ----
 class Hand:
     def __init__(self):
-        self.crds = []
+        self.cards = []
 
 
     def add(self, card):
-        self.crds.append(card)
+        self.cards.append(card)
 
 
     def get_score(self):
-        return sum(c.value for c in self.crds)
+        return sum(card.value for card in self.cards)
 
 
     def is_bust(self):
@@ -86,17 +86,17 @@ class Hand:
 
 
     def show(self, hidden=False):
-        if hidden and len(self.crds) > 1:
-            return "[??] " + " ".join(str(c) for c in self.crds[1:])
-        return " ".join(str(c) for c in self.crds)
+        if hidden and self.cards:
+            return "[??] " + " ".join(str(card) for card in self.cards[1:])
+        return " ".join(str(card) for card in self.cards)
 
 
 
 class Player:
     def __init__(self, name, coins=100):
         self.name = name
-        self.coins = coins
         self.hand = Hand()
+        self.coins = coins
         self.wins = 0
         self.losses = 0
 
@@ -109,12 +109,12 @@ class Player:
         self.hand.add(card)
 
 
-    def score(self):
-        return self.hand.get_score()
-
-
     def is_bust(self):
         return self.hand.is_bust()
+
+
+    def score(self):
+        return self.hand.get_score()
 
 
     def can_bet(self, amount):
@@ -125,44 +125,43 @@ class Player:
 class HumanPlayer(Player):
     def take_turn(self, deck, game=None):
         while True:
-            print(f"\nYour cards: {self.hand.show()} | Score: {self.score()}")
+            print(f"\nYou cards is: {self.hand.show()}  | Score: {self.score()}")
             if self.is_bust():
-                print("Too much!")
+                print("Too many! You bust!")
                 break
-            choice = input("Take card? [y/n or &command]: ").strip().lower()
+            choice = input("Take card? [y/n or &cmd]: ").strip().lower()
             if choice.startswith("&") and game:
                 game.debug_command(choice)
                 continue
-            if choice in ("д", "y"):
+            if choice in ('д', 'y'):
                 try:
                     self.add_card(deck.draw())
                 except RuntimeError:
-                    print("❌ Deck is gone.")
-                    break
-            elif choice in ("н", "n"):
+                    raise
+            elif choice in ('н', 'n'):
                 break
 
 
 
 class BotPlayer(Player):
-    def __init__(self, name, dificalty='normal', coins=100):
+    def __init__(self, name, difficulty='normal', coins=100):
         super().__init__(name, coins)
-        self.dificalty = dificalty
+        self.difficulty = difficulty
 
 
     def take_turn(self, deck, game=None):
         while True:
             score = self.score()
-            safe_cards = [c for c in deck.cards if self._would_not_bust(score, c)]
-            threshold = DIFFICULTY_THRESHOLDS[self.dificalty]
-            prob = len(safe_cards) / len(deck.cards) if deck.cards else 0
+            remaining = deck.cards
+            safe = [card for card in remaining if self._would_not_bust(score, card)]
+            prob = len(safe) / len(remaining) if remaining else 0
+            threshold = DIFFICULTY_THRESHOLDS[self.difficulty]
             if score < 17 and prob > threshold:
                 try:
                     self.add_card(deck.draw())
-                    time.sleep(1)
                 except RuntimeError:
-                    print("❌ Deck is gone.")
-                    break
+                    raise
+                time.sleep(1)
             else:
                 break
 
@@ -171,35 +170,33 @@ class BotPlayer(Player):
         value = 1 if card.rank == 'A' and score + 1 <= 21 else card.value
         return score + value <= 21
 
-
-    def choose_bet(self, opp_coins):
-        min_bet, max_bet = BET_RANGES[self.dificalty]
+    def choose_bet(self, opponent_coins):
+        min_bet, max_bet = BET_RANGES[self.difficulty]
         bet = random.randint(min_bet, max_bet)
-        return min(bet, self.coins, opp_coins)
+        return min(bet, self.coins, opponent_coins)
 
 
 
 class Game:
     def __init__(self):
-        self.deck = Deck()
-        self.dificalty = 'normal'
+        self.difficulty = 'normal'
         self.human = HumanPlayer("Player")
-        self.bot = BotPlayer("Bot", dificalty=self.dificalty)
+        self.bot = BotPlayer("Bot", difficulty=self.difficulty)
+        self.deck = Deck()
         self.bet = 0
 
 
     def main_menu(self):
         while True:
             self.clear_screen()
-            print("===== Russian BlackJack =====")
+            print("===== 21 Score =====")
             print(f"Coins: Player — {self.human.coins}, Bot — {self.bot.coins}")
-            print(f"Wins: {self.human.wins} | Loses: {self.human.losses}")
-            print("1 - Start game")
-            print("2 - Bot setting (now: {})".format(self.bot.dificalty))
-            print("3 - Rules")
-            print("4 - Exit")
+            print(f"Wins: {self.human.wins} | Loss: {self.human.losses}")
+            print("1 - Start Game")
+            print("2 - Setup Bot (now level: {})".format(self.bot.difficulty))
+            print("3 - Exit")
 
-            choice = input("Choice: ").strip()
+            choice = input("Choose: ").strip()
 
             if choice.startswith('&'):
                 self.debug_command(choice, context='menu')
@@ -210,40 +207,28 @@ class Game:
             elif choice == '2':
                 self.configure_bot()
             elif choice == '3':
-                self.rules()
-            elif choice == '4':
                 break
 
-    def rules(self):
-        self.clear_screen()
-        print('King = 4, Queen = 3, Jack = 2, Ace = 11, and Ace + Ace = 21. ')
-        print("DEBUG commands:")
-        print("&rm_cards - clear deck")
-        print("&get_money_{count} - gives the player money")
-        print("&bot_cards - show bot cards")
-        print("&ingame_cards - shows the remaining cards in the deck")
-        print('commands working in game and some in main menu')
-        x = input("Press Enter...")
 
     def configure_bot(self):
         self.clear_screen()
-        print("Choose bot level:")
-        print("1 - Easy")
-        print("2 - Normal")
-        print("3 - Hard")
+        print("You choose bot hardness:")
+        print("1 - Easy like cake")
+        print("2 - Medium (normal)")
+        print("3 - Hardest like brick")
+        choice = input("Choose: ").strip()
         mapping = {'1': 'easy', '2': 'normal', '3': 'hard'}
-        choice = input("Choice: ").strip()
-        self.dificalty = mapping.get(choice, self.dificalty)
-        self.bot = BotPlayer("Bot", dificalty=self.dificalty, coins=self.bot.coins)
+        self.difficulty = mapping.get(choice, 'normal')
+        self.bot = BotPlayer("Bot", difficulty=self.difficulty, coins=self.bot.coins)
 
 
     def play(self):
         if self.human.coins == 0:
-            print("You got no coins. Game over.")
+            print("You no coins. Game is over.")
             input("Press Enter...")
             return
         if self.bot.coins == 0:
-            print("Bot is out of coins. You win!")
+            print("Bot is out of money. You big win!")
             input("Press Enter...")
             return
 
@@ -258,18 +243,18 @@ class Game:
             self.handle_deck_exhaustion()
             return
 
-        self.clear_screen()
         first = random.choice([self.human, self.bot])
         second = self.bot if first == self.human else self.human
 
-        print("===== New Round =====")
+        self.clear_screen()
+        print("===== New Round Start =====")
         print(f"{self.human.name}: {self.human.coins} coins")
         print(f"{self.bot.name}: {self.bot.coins} coins")
         print(f"\nFirst move: {first.name}")
 
         self.bet = self.make_bet(first, second)
         if self.bet == 0:
-            print("Bet not possible. Skip round.")
+            print("Bet not good. Skip round.")
             input("Press Enter...")
             return
 
@@ -278,63 +263,80 @@ class Game:
             self.clear_screen()
             second.take_turn(self.deck, self if isinstance(second, HumanPlayer) else None)
         except RuntimeError:
+            print("\n❌ Game broken: deck is over.")
             self.handle_deck_exhaustion()
             return
 
         self.resolve()
 
 
-    def handle_deck_exhaustion(self):
-        print("\n❌ Deck is gone!")
-        h_crds = self.human.hand.crds
-        b_crds = self.bot.hand.crds
-
-        if not h_crds or not b_crds:
-            print("No winner. Someone got no cards.")
-        else:
-            h_score = self.human.score()
-            b_score = self.bot.score()
-            print(f"Your cards: {self.human.hand.show()} | Score: {h_score}")
-            print(f"Bot cards: {self.bot.hand.show()} | Score: {b_score}")
-            resalt = self.determine_winner(h_score, b_score)
-            print(f"Result: {resalt}")
-            self.update_score(resalt)
-
-        input("\nPress Enter to continue...")
+    def make_bet(self, initiator, opponent):
+        if isinstance(initiator, BotPlayer):
+            bet = initiator.choose_bet(opponent.coins)
+            print(f"Bot bet is {bet} coins.")
+            input("Press Enter...")
+            return bet
+        while True:
+            print(f"\nHow many coins bet? (you: {initiator.coins}, opponent: {opponent.coins})")
+            try:
+                bet = int(input("Bet: ").strip())
+                if 1 <= bet <= min(initiator.coins, opponent.coins):
+                    return bet
+            except:
+                pass
+            print("Bet bad. Try again.")
 
 
     def resolve(self):
         h_score = self.human.score()
         b_score = self.bot.score()
-        print("\n--- Results ---")
-        print(f"Your cards: {self.human.hand.show()} | Score: {h_score}")
+
+        print("\n--- Result Time ---")
+        print(f"You cards: {self.human.hand.show()} | Score: {h_score}")
         print(f"Bot cards: {self.bot.hand.show()} | Score: {b_score}")
-        resalt = self.determine_winner(h_score, b_score)
-        print(f"Result: {resalt}")
-        self.update_score(resalt)
-        input("\nPress Enter to continue...")
 
+        result = self.determine_winner(h_score, b_score)
+        print(f"\nResult: {result}")
 
-    def update_score(self, resalt):
-        if "you win" in resalt:
+        if "win" in result:
             self.human.coins += self.bet
             self.bot.coins -= self.bet
             self.human.wins += 1
             self.bot.losses += 1
-        elif "you lose" in resalt:
+        elif "lose" in result:
             self.human.coins -= self.bet
             self.bot.coins += self.bet
             self.human.losses += 1
             self.bot.wins += 1
+
+        print(f"\nCoins: Player — {self.human.coins}, Bot — {self.bot.coins}")
+        print(f"Score: Win — {self.human.wins}, Lose — {self.human.losses}")
+        input("\nPress Enter for next...")
+
+
+    def handle_deck_exhaustion(self):
+        h_score = self.human.score()
+        b_score = self.bot.score()
+
+        print("\n--- Deck is dead ---")
+        print(f"You cards: {self.human.hand.show()} | Score: {h_score}")
+        print(f"Bot cards: {self.bot.hand.show()} | Score: {b_score}")
+
+        if not self.human.hand.cards or not self.bot.hand.cards:
+            print("Not enough card. Is draw.")
+        elif len(self.bot.hand.cards) < 2 or len(self.human.hand.cards) < 2:
+            print("Someone not get enough cards. Is draw.")
+        else:
+            self.resolve()
 
 
     def determine_winner(self, h, b):
         if h > 21 and b > 21:
             return "Both bust. Draw."
         if h > 21:
-            return "You lose. Bust."
+            return "You lose. Too much."
         if b > 21:
-            return "You win! Bot bust."
+            return "You win! Bot bust!"
         if h > b:
             return "You win!"
         if b > h:
@@ -342,58 +344,45 @@ class Game:
         return "Draw."
 
 
-    def make_bet(self, initiator, opponent):
-        if isinstance(initiator, BotPlayer):
-            bet = initiator.choose_bet(opponent.coins)
-            print(f"Bot bet {bet} coins.")
-            input("Press Enter to go...")
-            return bet
-        while True:
-            print(f"\nHow many coins to bet? (you: {initiator.coins}, enemy: {opponent.coins})")
-            try:
-                bet = int(input("Bet: ").strip())
-                if 1 <= bet <= min(initiator.coins, opponent.coins):
-                    return bet
-            except:
-                pass
-            print("Bad bet.")
-
-
     def clear_screen(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
+        os.system("cls" if os.name == "nt" else "clear")
+
 
     def debug_command(self, command, context='game'):
         allowed_in_menu = {'&ingame_cards', '&rm_cards'}
         if command.startswith('&get_money_'):
-            try:
-                amount = int(command.split('_')[-1])
-                self.human.coins += amount
-                print(f"Got {amount} coins.")
+            if context in ('menu', 'game'):
+                try:
+                    amount = int(command.split('_')[-1])
+                    self.human.coins += amount
+                    print(f"{amount} coins added.")
+                except:
+                    print("Bad format.")
                 input("Press Enter...")
-            except:
-                print("Wrong format.")
-                input("Press Enter...")
-            return
-
+                return
         if context == 'menu' and command not in allowed_in_menu:
-            print("Command no can in menu.")
+            print("Command not can use in menu.")
             input("Press Enter...")
             return
 
         if command == '&ingame_cards':
-            print("\nLeft cards in deck:")
-            print(str(self.deck) or "Deck is empty")
+            print("\nLeft in deck:")
+            print(" ".join(str(c) for c in self.deck.cards) or "Deck empty")
             input("Press Enter...")
 
         elif command == '&rm_cards':
-            keep = self.human.hand.crds + self.bot.hand.crds
+            keep = self.human.hand.cards + self.bot.hand.cards
             self.deck.remove_except(keep)
-            print("Deck cleaned. Only game cards here.")
+            print("Deck clean. Only game cards now.")
             input("Press Enter...")
 
         elif command == '&bot_cards':
+            if context != 'game':
+                print("Command not work in menu.")
+                input("Press Enter...")
+                return
             print("\nBot cards:")
-            print(" ".join(str(c) for c in self.bot.hand.crds) or "None")
+            print(" ".join(str(c) for c in self.bot.hand.cards) or "Is nothing")
             input("Press Enter...")
 
         else:
